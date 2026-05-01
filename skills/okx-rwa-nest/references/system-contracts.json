@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1",
+  "verifiedAt": "2026-05-01",
+  "chains": {
+    "1": {
+      "name": "Ethereum",
+      "OLD_PREDICATE_PROXY": "0x6104fe10ca937a086ba7adbd0910a4733d380cb6",
+      "NEW_PREDICATE_PROXY": "0xfC0c4222B3A0c9B060C0B959DEc62442036b9035",
+      "ATOMIC_QUEUE": "0x228c44bb4885c6633f4b6c83f14622f37d5112e5",
+      "ATOMIC_SOLVER": "0x77fb098A1C28a5b50BFAdb69Ca1bEE515a7FC974",
+      "MULTICALL3": "0xcA11bde05977b3631167028862bE2a173976CA11"
+    }
+  }
+}
