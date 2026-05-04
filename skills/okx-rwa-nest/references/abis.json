@@ -1,5 +1,5 @@
 {
-  "$comment": "ABI fragments for the function calls the plugin encodes. Source: nest-agents/nest-vaults/references/abis/. Do not add functions we don't actually use.",
+  "$comment": "ABI fragments for the function calls the plugin encodes. Keep the set minimal — only functions the plugin actually invokes.",
   "ERC20_APPROVE": [
     {
       "type": "function",

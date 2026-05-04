@@ -14,7 +14,7 @@ metadata:
   version: "0.1.0"
   homepage: "https://nest.credit"
   requires:
-    plugin: "@plumenetwork/onchainos-nest-plugin@^0.1"
+    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.2"
 ---
 
 # OKX RWA Nest
