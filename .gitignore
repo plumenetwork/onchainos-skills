@@ -58,6 +58,9 @@ CLAUDE.local.md
 # Superpowers generated docs (local only)
 docs/superpowers/
 
+# Internal-only design docs (local reference, not for upstream)
+_internal/
+
 reports
 
 .zigbuild-cache/
