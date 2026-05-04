@@ -224,52 +224,52 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 
 ### Flow B — Withdraw
 
-**Boring vault (e.g. nTBILL — most current vaults):**
+**Boring vault (legacy — no live boring-only vaults on Ethereum at the moment, but documented for completeness):**
+
+`build-withdraw` reads the user's share-token allowance to AtomicQueue and **auto-prepends an approve when the allowance is insufficient**. Same pattern as the nest path below.
 
 ```
 1.  onchainos-nest status --address <user> --vault <slug>
        → confirm user owns ≥ requested shares
 2.  onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user> [--want-token <USDC>]
-       → returns { to: ATOMIC_QUEUE, inputData, value:"0", requestType: "atomicQueue" }
-3.  okx-security tx-scan --to <ATOMIC_QUEUE> --input-data <hex>
-4.  okx-agentic-wallet — wallet contract-call ...
-5.  Tell user: "Your withdrawal is queued. Expected fulfillment within ~24h."
-6.  Offer /schedule (Workflow 5) for hourly auto-check.
+       → returns { to: ATOMIC_QUEUE, inputData, value:"0", requestType: "atomicQueue",
+                    prerequisites: [<approve calldata>] (only when allowance is short) }
+3.  For each entry in prerequisites: tx-scan + wallet contract-call (in order).
+4.  okx-security tx-scan --to <ATOMIC_QUEUE> --input-data <hex>
+5.  okx-agentic-wallet — wallet contract-call ...
+6.  Tell user: "Your withdrawal is queued. Expected fulfillment within ~24h."
+7.  Offer /schedule (Workflow 5) for hourly auto-check.
 ```
 
 **Nest / boringNest vault (cooldown flow):**
 
-Withdrawing from a nest/boringNest vault is **two on-chain transactions before any cooldown begins**: an ERC-20 approve of the share token to the nestVault, and the `requestRedeem` call itself. The plugin's `build-withdraw` for this path emits **only** the `requestRedeem` calldata — the skill must build the share-token approve manually first.
+The plugin's `build-withdraw` reads the user's share-token allowance to the nestVault and **auto-prepends an approve when the allowance is insufficient**. The output is a single object with an optional `prerequisites: []` array — when non-empty, broadcast each prerequisite first (in order), then broadcast the main `requestRedeem` tx.
 
-Step 1 — approve the share token to the nestVault:
+Step 1 — request redeem (with auto-approve when needed):
 ```
 1.  onchainos-nest status --address <user> --vault <slug>
-       → confirm user owns ≥ requested shares; capture vault.vaultAddress (the share token)
-       → identify nestVaultAddress for the chain+asset (from build-withdraw's "to" field, or
-         from vaults --slug <slug> → nestVaults[].nestVaultAddress)
-2.  onchainos-nest build-approve --token <vault.vaultAddress> --spender <nestVaultAddress> \
-       --amount <shares> --chain 1
-3.  okx-security tx-scan --to <vault.vaultAddress> --input-data <hex>
-4.  okx-agentic-wallet — wallet contract-call ...
-       → wait for txStatus=success
-```
-
-Step 2 — request redeem:
-```
-5.  onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user>
-       → requestType: "requestRedeem", to: <nestVaultAddress>
-6.  okx-security tx-scan --to <nestVaultAddress> --input-data <hex>
-       → if simulator.revertReason includes "TRANSFER_FROM_FAILED", the share-token
-         allowance from Step 1 isn't yet on-chain or is insufficient — re-check Step 4.
-7.  okx-agentic-wallet — wallet contract-call ...
+       → confirm user owns ≥ requested shares
+2.  onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user>
+       → returns { to: <nestVaultAddress>, inputData, value:"0",
+                    requestType: "requestRedeem",
+                    prerequisites: [<approve calldata>] (only when allowance is short) }
+3.  For each entry in prerequisites:
+       a. okx-security tx-scan --to <prereq.to> --input-data <prereq.inputData>
+       b. okx-agentic-wallet — wallet contract-call ...
+       c. wait for txStatus=success
+4.  okx-security tx-scan --to <main.to> --input-data <main.inputData>
+       → if simulator.revertReason includes "TRANSFER_FROM_FAILED", a prerequisite
+         didn't land — re-check Step 3's broadcasts.
+5.  okx-agentic-wallet — wallet contract-call ...
 ```
 
 After the requestRedeem broadcast, the cooldown begins. Tell user: *"Your redemption is in cooldown. Say 'claim from Nest' once it's ready, or I can /schedule a check."*
 
-Step 3 — claim (after cooldown):
+Step 2 — claim (after cooldown):
 ```
 onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user> --claim
-   → requestType: "redeem", to: <nestVaultAddress>
+   → requestType: "redeem", to: <nestVaultAddress>, no prerequisites needed
+     (redeem doesn't transferFrom the user)
 ```
 
 `onchainos-nest pending-redemptions --address <user> --vault <slug>` reports `currentClaimableAssets` (top-level). When > 0, claim is ready. **Note**: Nest's API has ~30s indexer lag; if `pending-redemptions` returns `[]` immediately after a `requestRedeem` broadcast, retry within ~60s.
