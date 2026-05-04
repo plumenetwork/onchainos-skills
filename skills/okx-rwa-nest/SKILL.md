@@ -183,37 +183,43 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 | "Withdraw X shares from <vault>" / "从 <vault> 提取" | Flow B — Withdraw |
 | "Show my Nest positions" / "我的 Nest 仓位" | Flow C — Status |
 | "How has nTBILL performed?" / "nTBILL 表现如何" | Flow D — History |
-| "Deposit USDC from BSC into nTBILL" | Flow E — Cross-chain deposit (with disclosure) |
+| "Deposit X USDT on BSC into nTBILL" / "Deposit X on Worldchain" | Flow A with `--chain 56` (or 480 / 9745) |
 | "Move my nTBILL from Ethereum to Plume" / "Bridge my Nest shares to BSC" | Flow F — Share bridge |
 
-### Flow A — First-time deposit (USDC on Ethereum → vault)
+### Flow A — Same-chain deposit
+
+The same flow runs on every chain Nest's composer set serves AND OKX
+wallet routes — Ethereum (USDC), BSC (USDT), Worldchain (USDC), Plasma
+(USDT). Substitute `<chain>` and `<asset>` per-chain. Default is
+Ethereum unless the user names another chain or routing requires it.
 
 ```
 1.  Plugin pre-flight (onchainos-nest --version)
 2.  okx-agentic-wallet — wallet status (login if needed)
-3.  okx-agentic-wallet — wallet addresses --chain ethereum   (resolve user's address)
-4.  okx-agentic-wallet — wallet balance --chain ethereum --token-address <USDC>
+3.  okx-agentic-wallet — wallet addresses --chain <chain>   (resolve user's address)
+4.  okx-agentic-wallet — wallet balance --chain <chain> --token-address <asset>
        → if insufficient stable, suggest okx-dex-swap and stop
-       → ALSO check native ETH balance ≥ 0.003 ETH for gas. If less, either tell user
-         to top up ETH OR propose Gas Station (defer to okx-agentic-wallet Gas Station
-         setup flow). Approve + deposit on Ethereum together typically burn ~0.001-0.0015
-         ETH at OKX's broadcast pricing (chain eth_gasPrice underestimates because OKX
-         adds priority fee for inclusion).
+       → ALSO check the chain's native gas token (ETH on Ethereum, BNB on BSC, etc.)
+         is funded. Approve + deposit together typically burn ~0.001-0.0015 ETH on
+         Ethereum or ~0.001 BNB on BSC at OKX's broadcast pricing (chain eth_gasPrice
+         underestimates because OKX adds priority fee for inclusion). On Ethereum
+         specifically, propose Gas Station (defer to okx-agentic-wallet Gas Station
+         setup flow) as an alternative to topping up ETH.
 5.  onchainos-nest recommend --capital <amt> --risk <tier> --mode simple
        → present top vault to user; await confirmation
-6.  onchainos-nest eligibility --address <user> --chain-id 1 [--is-new-proxy]
+6.  onchainos-nest eligibility --address <user> --chain-id <chainId> [--is-new-proxy]
        → if eligible:false → surface reason, stop
        → save predicateMessage to /tmp/predicate.json
-7.  onchainos-nest build-approve --token <USDC> --spender <PROXY> --amount <amt> --chain 1
+7.  onchainos-nest build-approve --token <asset> --spender <PROXY> --amount <amt> --chain <chainId>
        → returns { to, inputData, value:"0", description }
-8.  okx-security tx-scan --to <USDC> --input-data <hex>
+8.  okx-security tx-scan --to <asset> --input-data <hex>
        → if action=block, STOP. If warn, require explicit user confirmation.
-9.  okx-agentic-wallet — wallet contract-call --to <USDC> --chain 1 --input-data <hex>
+9.  okx-agentic-wallet — wallet contract-call --to <asset> --chain <chain> --input-data <hex>
        → handle confirming-response (exit 2) per okx-agentic-wallet
        → handle Gas Station setup (exit 3) per okx-agentic-wallet
        → wait for txStatus=success
-10. onchainos-nest build-deposit --vault <slug> --asset <USDC> --amount <amt> \
-       --address <user> --predicate-message @/tmp/predicate.json
+10. onchainos-nest build-deposit --vault <slug> --asset <asset> --amount <amt> \
+       --address <user> --chain <chainId> --predicate-message @/tmp/predicate.json
        → returns { to, inputData, value:"0", description, expectedShares, slippageBps }
 11. okx-security tx-scan --to <PROXY> --input-data <hex>     (mandatory)
 12. okx-agentic-wallet — wallet contract-call ...            (broadcast deposit)
@@ -221,6 +227,14 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 ```
 
 `<PROXY>` resolves from the build-deposit response's `to` field (it's `OLD_PREDICATE_PROXY` for boring, `NEW_PREDICATE_PROXY` for nest/boringNest). Always use the exact value the plugin returned — never hardcode.
+
+Per-chain accepted asset (current Nest composer set):
+- Ethereum / Worldchain: USDC
+- BSC: USDT (18 decimals — note that nTBILL itself is also 18 decimals on BSC)
+- Plasma: USDT0
+- Plume: USDC, USDC.e, pUSD (out of OKX wallet routing scope)
+
+Use `onchainos-nest vaults --slug <slug>` to read the per-chain `liquidAssets` if uncertain.
 
 ### Flow B — Withdraw
 
