@@ -14,7 +14,7 @@ metadata:
   version: "0.1.0"
   homepage: "https://nest.credit"
   requires:
-    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.4"
+    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.5"
 ---
 
 # OKX RWA Nest
@@ -119,16 +119,14 @@ This skill never holds private keys, never broadcasts on its own, and never read
 
 ### `--chain` resolution
 
-Default chain is **Ethereum** (chainId 1). Each vault's `depositChains` and `sharesChains` come from the OKX wallet routable chain list, narrowed to what the vault actually accepts. In practice today, that resolves to `[1]` (Ethereum only).
+Default chain is **Ethereum** (chainId 1). Each vault's `depositChains` and `sharesChains` come from the OKX wallet routable chain list, narrowed to what the vault actually accepts. Same-chain deposits work on every chain where Nest has a composer deployed AND OKX wallet routes — today that's Ethereum (USDC), BSC (USDT), Worldchain (USDC), Plasma (USDT). Plume itself is in Nest's composer set but the OKX wallet doesn't sign for Plume.
 
 When a user names a non-default chain (BSC, Arbitrum, etc.):
 1. Run `onchainos-nest vaults --slug <slug>` and read `depositChains`.
 2. If the requested chain is in the list, use it.
 3. If not, list what *is* available: *"Deposits on `<chain>` aren't routable for this vault right now. Available: `<list>`."*
 
-When the user wants a vault whose shares would land on a chain your wallet can't route, surface this disclosure **at deposit time, before broadcast**:
-
-> Depositing from `<source-chain>` would route your shares onto Plume via LayerZero. Withdrawals from Plume need a separate Plume wallet (e.g. MetaMask) for signing. You can deposit on Ethereum instead — same vault, fully routable through your OKX wallet. Which do you want?
+Per-chain decimals: `vault.decimals` is the Ethereum-side share size (6); some chains diverge (BSC nTBILL is 18 decimals — see API field `decimalsOverride`). The plugin reads decimals on-chain so amount conversion is automatic, but downstream UIs that quote share balances should use the per-chain on-chain `decimals()` instead of the API's top-level field.
 
 Plugin uses the OKX wallet routable chain list, narrowed to chains the vault accepts.
 
@@ -296,13 +294,13 @@ onchainos-nest history --vault <slug> --days 30
    → display: rolling7d/30d/sec30d APY, tvl30DayChange %, recent transaction count, price points
 ```
 
-### Flow E — Cross-chain deposit (USDC on BSC → vault)
+### Flow E — Cross-chain `depositAndBridge` (boring vaults only)
 
-Cross-chain deposits use Nest's `depositAndBridge` flow: the user's stable on the source chain (BSC, Arbitrum, etc.) is bridged to Plume via LayerZero and lands as vault shares on Plume. The plugin's `build-deposit` automatically emits `depositAndBridge(...)` calldata when `--chain` is anything other than `1` (Ethereum).
+Two-step cross-chain deposit lands shares on Plume in a single tx via Nest's `depositAndBridge`: the user's stablecoin on the source chain (BSC, Arbitrum, Plasma, etc.) is sent to OLD_PREDICATE_PROXY, which routes it through LayerZero to mint shares on Plume.
 
-**Currently supported only for `vaultType: "boring"` vaults.** The newer `nest` and `boringNest` types do not have a cross-chain entry point — `build-deposit` returns a clean error and suggests Ethereum. (At time of writing, all live Nest vaults are `boringNest`, so cross-chain is effectively unused until Nest deploys a `boring`-only vault. The code path is in place for when that happens.)
+**Applies to `vaultType: "boring"` only.** All currently live Nest vaults are `boringNest`, which uses Flow B (same-chain deposit) instead — the composer is deployed on every supported source chain and shares mint locally on the source chain. Flow F can then bridge those shares to Plume or anywhere else if needed.
 
-When the boring cross-chain path applies:
+When a boring vault deploys, the cross-chain path:
 
 ```
 1-3. Same as Flow A (login, address resolution).
@@ -322,7 +320,7 @@ When the boring cross-chain path applies:
         (e.g. MetaMask connected to Plume) for signing.
 ```
 
-If the user requests cross-chain for a `nest` / `boringNest` vault, the plugin returns a clean error suggesting Ethereum same-chain. The user can deposit same-chain first, then bridge shares cross-chain via Flow F below.
+For `nest` / `boringNest` vaults the user wants to deposit from a non-Ethereum chain: route via Flow B with `--chain 56` (or 480, 9745). Shares mint on that source chain; bridge to other chains afterwards via Flow F.
 
 ### Flow F — Bridge already-owned shares between chains
 
