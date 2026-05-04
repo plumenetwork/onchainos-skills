@@ -193,7 +193,12 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 2.  okx-agentic-wallet — wallet status (login if needed)
 3.  okx-agentic-wallet — wallet addresses --chain ethereum   (resolve user's address)
 4.  okx-agentic-wallet — wallet balance --chain ethereum --token-address <USDC>
-       → if insufficient, suggest okx-dex-swap and stop
+       → if insufficient stable, suggest okx-dex-swap and stop
+       → ALSO check native ETH balance ≥ 0.003 ETH for gas. If less, either tell user
+         to top up ETH OR propose Gas Station (defer to okx-agentic-wallet Gas Station
+         setup flow). Approve + deposit on Ethereum together typically burn ~0.001-0.0015
+         ETH at OKX's broadcast pricing (chain eth_gasPrice underestimates because OKX
+         adds priority fee for inclusion).
 5.  onchainos-nest recommend --capital <amt> --risk <tier> --mode simple
        → present top vault to user; await confirmation
 6.  onchainos-nest eligibility --address <user> --chain-id 1 [--is-new-proxy]
@@ -234,20 +239,40 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 
 **Nest / boringNest vault (cooldown flow):**
 
-Step 1 — request redeem:
-```
-onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user>
-   → requestType: "requestRedeem", to: <nestVaultAddress>
-```
-After broadcast, the cooldown begins. Tell user: *"Your redemption is in cooldown. Say 'claim from Nest' once it's ready, or I can /schedule a check."*
+Withdrawing from a nest/boringNest vault is **two on-chain transactions before any cooldown begins**: an ERC-20 approve of the share token to the nestVault, and the `requestRedeem` call itself. The plugin's `build-withdraw` for this path emits **only** the `requestRedeem` calldata — the skill must build the share-token approve manually first.
 
-Step 2 — claim (after cooldown):
+Step 1 — approve the share token to the nestVault:
+```
+1.  onchainos-nest status --address <user> --vault <slug>
+       → confirm user owns ≥ requested shares; capture vault.vaultAddress (the share token)
+       → identify nestVaultAddress for the chain+asset (from build-withdraw's "to" field, or
+         from vaults --slug <slug> → nestVaults[].nestVaultAddress)
+2.  onchainos-nest build-approve --token <vault.vaultAddress> --spender <nestVaultAddress> \
+       --amount <shares> --chain 1
+3.  okx-security tx-scan --to <vault.vaultAddress> --input-data <hex>
+4.  okx-agentic-wallet — wallet contract-call ...
+       → wait for txStatus=success
+```
+
+Step 2 — request redeem:
+```
+5.  onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user>
+       → requestType: "requestRedeem", to: <nestVaultAddress>
+6.  okx-security tx-scan --to <nestVaultAddress> --input-data <hex>
+       → if simulator.revertReason includes "TRANSFER_FROM_FAILED", the share-token
+         allowance from Step 1 isn't yet on-chain or is insufficient — re-check Step 4.
+7.  okx-agentic-wallet — wallet contract-call ...
+```
+
+After the requestRedeem broadcast, the cooldown begins. Tell user: *"Your redemption is in cooldown. Say 'claim from Nest' once it's ready, or I can /schedule a check."*
+
+Step 3 — claim (after cooldown):
 ```
 onchainos-nest build-withdraw --vault <slug> --shares <amt> --address <user> --claim
    → requestType: "redeem", to: <nestVaultAddress>
 ```
 
-`onchainos-nest pending-redemptions --address <user> --vault <slug>` reports `currentClaimableAssets`. When > 0, claim is ready.
+`onchainos-nest pending-redemptions --address <user> --vault <slug>` reports `currentClaimableAssets` (top-level). When > 0, claim is ready. **Note**: Nest's API has ~30s indexer lag; if `pending-redemptions` returns `[]` immediately after a `requestRedeem` broadcast, retry within ~60s.
 
 ### Flow C — Status (read-only)
 
@@ -377,6 +402,9 @@ For the full error matrix, see `references/troubleshooting.md`. Most common scen
 | Plugin not installed | Pre-flight prompts the user; on confirm, runs `npm install -g @plumenetwork/onchainos-nest-plugin`. |
 | Wallet not logged in | Defer to `okx-agentic-wallet` login flow. |
 | Insufficient stable balance | STOP, suggest `okx-dex-swap` (Workflow 2). |
+| Insufficient native (ETH) for gas | Tell user to fund **at least 0.003 ETH** at current mainnet conditions. OKX's broadcast adds priority fee on top of chain `eth_gasPrice`, so naive `gas × eth_gasPrice` underestimates. Alternatively, propose Gas Station (defer to `okx-agentic-wallet` Gas Station setup flow — pays gas in stables). |
+| OKX broadcast returns `txStatus: ERROR` (often blank `failReason`) | Run `onchainos wallet history --address <user> --chain ethereum` and read the most recent entry's `failReason`. Common cause: `insufficient funds for gas * price + value` — surface that to the user with a top-up suggestion. |
+| Nest API `pending-redemptions` returns `[]` immediately after `requestRedeem` broadcast | API indexer lag, ~30s typical. Retry within 60s before treating as a real miss. |
 | US country | Hard-block in `eligibility`. Cannot proceed. |
 | `isCompliant: false` from Nest | Surface API's `message` verbatim, stop. |
 | Predicate expired between eligibility and build-deposit | Auto-rerun `eligibility`, max 2 retries, then stop. |
