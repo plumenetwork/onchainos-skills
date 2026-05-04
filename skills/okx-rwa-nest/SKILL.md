@@ -119,18 +119,18 @@ This skill never holds private keys, never broadcasts on its own, and never read
 
 ### `--chain` resolution
 
-Default chain is **Ethereum** (chainId 1). The plugin enriches each vault with `depositChains[]` and `sharesChains[]` — the intersection of (chains your wallet supports per `onchainos wallet chains`) and (chains the vault accepts). Currently this typically resolves to `[1]` for Ethereum-only deposits.
+Default chain is **Ethereum** (chainId 1). Each vault's `depositChains` and `sharesChains` come from the OKX wallet routable chain list, narrowed to what the vault actually accepts. In practice today, that resolves to `[1]` (Ethereum only).
 
 When a user names a non-default chain (BSC, Arbitrum, etc.):
 1. Run `onchainos-nest vaults --slug <slug>` and read `depositChains`.
 2. If the requested chain is in the list, use it.
 3. If not, list what *is* available: *"Deposits on `<chain>` aren't routable for this vault right now. Available: `<list>`."*
 
-When the user wants a vault whose shares would land on a chain your wallet can't currently route (today: Plume), surface this disclosure **at deposit time, before broadcast**:
+When the user wants a vault whose shares would land on a chain your wallet can't route, surface this disclosure **at deposit time, before broadcast**:
 
-> Depositing from `<source-chain>` would route your shares onto Plume via LayerZero. Withdrawals from Plume currently need a separate Plume wallet (e.g. MetaMask). You can deposit on Ethereum instead — same vault, fully routable through your OKX wallet. Which do you want?
+> Depositing from `<source-chain>` would route your shares onto Plume via LayerZero. Withdrawals from Plume need a separate Plume wallet (e.g. MetaMask) for signing. You can deposit on Ethereum instead — same vault, fully routable through your OKX wallet. Which do you want?
 
-When OKX adds Plume to `wallet chains`, this disclosure disappears automatically — no skill update needed.
+Plugin uses the OKX wallet routable chain list, narrowed to chains the vault accepts.
 
 ### `--mode` (recommend)
 
@@ -296,20 +296,31 @@ onchainos-nest history --vault <slug> --days 30
 
 ### Flow E — Cross-chain deposit (USDC on BSC → vault)
 
-Same as Flow A, but with the cross-chain disclosure between steps 4 and 5:
+Cross-chain deposits use Nest's `depositAndBridge` flow: the user's stable on the source chain (BSC, Arbitrum, etc.) is bridged to Plume via LayerZero and lands as vault shares on Plume. The plugin's `build-deposit` automatically emits `depositAndBridge(...)` calldata when `--chain` is anything other than `1` (Ethereum).
+
+**Currently supported only for `vaultType: "boring"` vaults.** The newer `nest` and `boringNest` types do not have a cross-chain entry point — `build-deposit` returns a clean error and suggests Ethereum. (At time of writing, all live Nest vaults are `boringNest`, so cross-chain is effectively unused until Nest deploys a `boring`-only vault. The code path is in place for when that happens.)
+
+When the boring cross-chain path applies:
 
 ```
-4.  okx-agentic-wallet — wallet balance on BSC
-5.  Show cross-chain disclosure (see Parameter Rules → --chain).
-       If user picks Ethereum instead, restart Flow A on Ethereum.
-       If user proceeds: continue.
-6-13. Same as Flow A, but onchainos-nest build-deposit emits depositAndBridge calldata
-       with bridge fee in BNB (the value is non-zero).
-14. After broadcast, LayerZero settles to Plume in ~3-5 minutes.
-       Status reads via Nest API still work for the Plume position, but
-       wallet-side actions on the Plume shares require an external wallet
-       until OKX adds Plume.
+1-3. Same as Flow A (login, address resolution).
+4.   okx-agentic-wallet — wallet balance --chain bsc
+5.   Eligibility (note: NOT --is-new-proxy; cross-chain is OLD_PREDICATE_PROXY only).
+6.   onchainos-nest build-deposit --vault <slug> --asset <USDC-on-BSC> --amount <amt>
+        --address <user> --predicate-message @/tmp/predicate.json --chain 56
+        → returns { to: OLD_PREDICATE_PROXY, inputData, value: <LZ fee in BNB>,
+                     requestType: "depositAndBridge", expectedShares, slippageBps }
+7.   Broadcast approve on BSC for the OLD_PREDICATE_PROXY (use prerequisites pattern
+        if available; otherwise build-approve manually).
+8.   tx-scan + wallet contract-call ... --chain 56 --amt <value from step 6>
+        → BNB-denominated fee covers LayerZero costs to Plume.
+9.   After broadcast, LayerZero settles to Plume in ~3-5 minutes.
+        Status reads via Nest API still work for the resulting Plume position;
+        wallet-side actions on the Plume shares require a Plume-capable wallet
+        (e.g. MetaMask connected to Plume) for signing.
 ```
+
+If the user requests cross-chain for a `nest` / `boringNest` vault, surface the plugin's error verbatim and offer Ethereum same-chain as the alternative.
 
 ## Cross-Skill Workflows
 
@@ -420,7 +431,7 @@ For the full error matrix, see `references/troubleshooting.md`. Most common scen
 
 ## Global Notes
 
-- **Default chain is Ethereum**, but the plugin dynamically supports any chain in (`onchainos wallet chains` ∩ `vault.liquidAssets[].chainId`). When OKX adds new chains, the supported set grows automatically — no skill update.
+- **Default chain is Ethereum.** Plugin uses the OKX wallet routable chain list, narrowed to chains the vault accepts.
 - **Per-vault contract addresses are fetched live from the Nest API**. New vaults Nest deploys appear automatically. Only universal contracts (PredicateProxy old/new, AtomicQueue, AtomicSolver, Multicall3) are vendored — see `references/system-contracts.md`.
 - **Compliance is per-deposit**. The predicate signature must be fresh at broadcast time. If it expires mid-flow, re-run `eligibility`.
 - **Boring vs nest/boringNest** vault types use different on-chain entry points. The plugin selects the right one based on `vault.vaultType`. Treat `nest` and `boringNest` identically (both go through NEW_PREDICATE_PROXY).
@@ -448,4 +459,4 @@ A: Boring vaults (most current Nest vaults) settle withdrawals via `AtomicQueue`
 
 **Q: Can I just deposit on Plume directly?**
 
-A: Plume isn't currently routable through your OKX wallet for signing. If you have a separate Plume wallet (e.g. MetaMask connected to Plume), you can deposit there directly using Nest's app. When OKX adds Plume support, this skill will pick it up automatically.
+A: Your OKX wallet doesn't sign for Plume. If you have a Plume-capable wallet (e.g. MetaMask connected to Plume), you can deposit there directly using Nest's app. The plugin uses the OKX wallet routable chain list, so its supported chains always match what your wallet can sign.

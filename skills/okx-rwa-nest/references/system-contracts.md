@@ -1,6 +1,6 @@
 # Nest System Contracts
 
-The plugin (`@plumenetwork/onchainos-nest-plugin`) consumes a vendored copy of `system-contracts.json`. This file is the human-readable mirror — addresses must match the JSON byte-for-byte.
+The plugin (`@plumenetwork/onchainos-nest-plugin`) ships its own copy of `system-contracts.json`. This file is the human-readable mirror — addresses must match the JSON exactly.
 
 **Last verified on-chain:** 2026-05-01
 
@@ -18,7 +18,7 @@ Per-vault contract addresses (Teller, Accountant, BoringVault, NestVault) are **
 
 ## Verification procedure
 
-When proposing a release or upstream PR, re-run the on-chain bytecode checks (see `_internal/nest-agents-port-notes.md` for the procedure) and update the `verifiedAt` field in `system-contracts.json`. The plugin loads `verifiedAt` and surfaces it in `--version` output so downstream agents know the freshness of the vendored data.
+When proposing a release, re-run `eth_getCode` against each address on Ethereum mainnet to confirm bytecode is still present, and update the `verifiedAt` field in `system-contracts.json` accordingly.
 
 ## Why these addresses are universal
 
@@ -28,4 +28,4 @@ If a future chain breaks the CREATE2 invariant (different address on that chain)
 
 ## Other chains
 
-Currently only Ethereum (chainId 1) is committed to the JSON. When OKX adds Plume (chainId 98866) to its supported wallet chain list, this file gains a `"98866"` entry by re-running the bytecode verification on a Plume RPC. Adding the entry is a single-line PR — no schema or plugin code changes.
+Currently only Ethereum (chainId 1) is committed to the JSON. Other chains can be added by re-running the bytecode verification on the relevant chain's RPC and appending an entry under `chains.<chainId>` — no schema or plugin code changes.
