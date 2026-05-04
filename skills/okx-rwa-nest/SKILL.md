@@ -14,7 +14,7 @@ metadata:
   version: "0.1.0"
   homepage: "https://nest.credit"
   requires:
-    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.2"
+    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.5"
 ---
 
 # OKX RWA Nest
@@ -119,16 +119,14 @@ This skill never holds private keys, never broadcasts on its own, and never read
 
 ### `--chain` resolution
 
-Default chain is **Ethereum** (chainId 1). Each vault's `depositChains` and `sharesChains` come from the OKX wallet routable chain list, narrowed to what the vault actually accepts. In practice today, that resolves to `[1]` (Ethereum only).
+Default chain is **Ethereum** (chainId 1). Each vault's `depositChains` and `sharesChains` come from the OKX wallet routable chain list, narrowed to what the vault actually accepts. Same-chain deposits work on every chain where Nest has a composer deployed AND OKX wallet routes — today that's Ethereum (USDC), BSC (USDT), Worldchain (USDC), Plasma (USDT). Plume itself is in Nest's composer set but the OKX wallet doesn't sign for Plume.
 
 When a user names a non-default chain (BSC, Arbitrum, etc.):
 1. Run `onchainos-nest vaults --slug <slug>` and read `depositChains`.
 2. If the requested chain is in the list, use it.
 3. If not, list what *is* available: *"Deposits on `<chain>` aren't routable for this vault right now. Available: `<list>`."*
 
-When the user wants a vault whose shares would land on a chain your wallet can't route, surface this disclosure **at deposit time, before broadcast**:
-
-> Depositing from `<source-chain>` would route your shares onto Plume via LayerZero. Withdrawals from Plume need a separate Plume wallet (e.g. MetaMask) for signing. You can deposit on Ethereum instead — same vault, fully routable through your OKX wallet. Which do you want?
+Per-chain decimals: `vault.decimals` is the Ethereum-side share size (6); some chains diverge (BSC nTBILL is 18 decimals — see API field `decimalsOverride`). The plugin reads decimals on-chain so amount conversion is automatic, but downstream UIs that quote share balances should use the per-chain on-chain `decimals()` instead of the API's top-level field.
 
 Plugin uses the OKX wallet routable chain list, narrowed to chains the vault accepts.
 
@@ -166,9 +164,10 @@ The plugin exposes nine subcommands. Each prints JSON to stdout, errors to stder
 | C4 | `onchainos-nest build-approve --token <0x...> --spender <0x...> --amount <ui> --chain <num>` | ERC-20 approve calldata |
 | C5 | `onchainos-nest build-deposit --vault <slug> --asset <0x...> --amount <ui> --address <0x...> --predicate-message <jsonOr@path> [--chain <num>] [--slippage-bps <bps>]` | Deposit calldata (boring or nest) |
 | C6 | `onchainos-nest build-withdraw --vault <slug> --shares <ui> --address <0x...> [--want-token <0x...>] [--chain <num>] [--claim]` | Withdraw calldata (atomic queue or requestRedeem/redeem) |
-| C7 | `onchainos-nest status --address <0x...> [--vault <slug>]` | User position summary |
-| C8 | `onchainos-nest pending-redemptions --address <0x...> [--vault <slug>]` | Pending and claimable redemptions |
-| C9 | `onchainos-nest history --vault <slug> [--days <n>]` | Vault APY trend, TVL change, recent activity |
+| C7 | `onchainos-nest build-bridge --vault <slug> --shares <ui> --address <0x...> --source-chain <num> --dest-chain <num>` | Calldata to bridge already-owned shares cross-chain via LayerZero (OFT for nest/boringNest, multi-chain Teller for boring) |
+| C8 | `onchainos-nest status --address <0x...> [--vault <slug>]` | User position summary |
+| C9 | `onchainos-nest pending-redemptions --address <0x...> [--vault <slug>]` | Pending and claimable redemptions |
+| C10 | `onchainos-nest history --vault <slug> [--days <n>]` | Vault APY trend, TVL change, recent activity |
 
 For Nest API details and response schemas, see `references/api-cookbook.md`.
 
@@ -184,36 +183,43 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 | "Withdraw X shares from <vault>" / "从 <vault> 提取" | Flow B — Withdraw |
 | "Show my Nest positions" / "我的 Nest 仓位" | Flow C — Status |
 | "How has nTBILL performed?" / "nTBILL 表现如何" | Flow D — History |
-| "Deposit USDC from BSC into nTBILL" | Flow E — Cross-chain (with disclosure) |
+| "Deposit X USDT on BSC into nTBILL" / "Deposit X on Worldchain" | Flow A with `--chain 56` (or 480 / 9745) |
+| "Move my nTBILL from Ethereum to Plume" / "Bridge my Nest shares to BSC" | Flow F — Share bridge |
 
-### Flow A — First-time deposit (USDC on Ethereum → vault)
+### Flow A — Same-chain deposit
+
+The same flow runs on every chain Nest's composer set serves AND OKX
+wallet routes — Ethereum (USDC), BSC (USDT), Worldchain (USDC), Plasma
+(USDT). Substitute `<chain>` and `<asset>` per-chain. Default is
+Ethereum unless the user names another chain or routing requires it.
 
 ```
 1.  Plugin pre-flight (onchainos-nest --version)
 2.  okx-agentic-wallet — wallet status (login if needed)
-3.  okx-agentic-wallet — wallet addresses --chain ethereum   (resolve user's address)
-4.  okx-agentic-wallet — wallet balance --chain ethereum --token-address <USDC>
+3.  okx-agentic-wallet — wallet addresses --chain <chain>   (resolve user's address)
+4.  okx-agentic-wallet — wallet balance --chain <chain> --token-address <asset>
        → if insufficient stable, suggest okx-dex-swap and stop
-       → ALSO check native ETH balance ≥ 0.003 ETH for gas. If less, either tell user
-         to top up ETH OR propose Gas Station (defer to okx-agentic-wallet Gas Station
-         setup flow). Approve + deposit on Ethereum together typically burn ~0.001-0.0015
-         ETH at OKX's broadcast pricing (chain eth_gasPrice underestimates because OKX
-         adds priority fee for inclusion).
+       → ALSO check the chain's native gas token (ETH on Ethereum, BNB on BSC, etc.)
+         is funded. Approve + deposit together typically burn ~0.001-0.0015 ETH on
+         Ethereum or ~0.001 BNB on BSC at OKX's broadcast pricing (chain eth_gasPrice
+         underestimates because OKX adds priority fee for inclusion). On Ethereum
+         specifically, propose Gas Station (defer to okx-agentic-wallet Gas Station
+         setup flow) as an alternative to topping up ETH.
 5.  onchainos-nest recommend --capital <amt> --risk <tier> --mode simple
        → present top vault to user; await confirmation
-6.  onchainos-nest eligibility --address <user> --chain-id 1 [--is-new-proxy]
+6.  onchainos-nest eligibility --address <user> --chain-id <chainId> [--is-new-proxy]
        → if eligible:false → surface reason, stop
        → save predicateMessage to /tmp/predicate.json
-7.  onchainos-nest build-approve --token <USDC> --spender <PROXY> --amount <amt> --chain 1
+7.  onchainos-nest build-approve --token <asset> --spender <PROXY> --amount <amt> --chain <chainId>
        → returns { to, inputData, value:"0", description }
-8.  okx-security tx-scan --to <USDC> --input-data <hex>
+8.  okx-security tx-scan --to <asset> --input-data <hex>
        → if action=block, STOP. If warn, require explicit user confirmation.
-9.  okx-agentic-wallet — wallet contract-call --to <USDC> --chain 1 --input-data <hex>
+9.  okx-agentic-wallet — wallet contract-call --to <asset> --chain <chain> --input-data <hex>
        → handle confirming-response (exit 2) per okx-agentic-wallet
        → handle Gas Station setup (exit 3) per okx-agentic-wallet
        → wait for txStatus=success
-10. onchainos-nest build-deposit --vault <slug> --asset <USDC> --amount <amt> \
-       --address <user> --predicate-message @/tmp/predicate.json
+10. onchainos-nest build-deposit --vault <slug> --asset <asset> --amount <amt> \
+       --address <user> --chain <chainId> --predicate-message @/tmp/predicate.json
        → returns { to, inputData, value:"0", description, expectedShares, slippageBps }
 11. okx-security tx-scan --to <PROXY> --input-data <hex>     (mandatory)
 12. okx-agentic-wallet — wallet contract-call ...            (broadcast deposit)
@@ -221,6 +227,14 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 ```
 
 `<PROXY>` resolves from the build-deposit response's `to` field (it's `OLD_PREDICATE_PROXY` for boring, `NEW_PREDICATE_PROXY` for nest/boringNest). Always use the exact value the plugin returned — never hardcode.
+
+Per-chain accepted asset (current Nest composer set):
+- Ethereum / Worldchain: USDC
+- BSC: USDT (18 decimals — note that nTBILL itself is also 18 decimals on BSC)
+- Plasma: USDT0
+- Plume: USDC, USDC.e, pUSD (out of OKX wallet routing scope)
+
+Use `onchainos-nest vaults --slug <slug>` to read the per-chain `liquidAssets` if uncertain.
 
 ### Flow B — Withdraw
 
@@ -294,13 +308,13 @@ onchainos-nest history --vault <slug> --days 30
    → display: rolling7d/30d/sec30d APY, tvl30DayChange %, recent transaction count, price points
 ```
 
-### Flow E — Cross-chain deposit (USDC on BSC → vault)
+### Flow E — Cross-chain `depositAndBridge` (boring vaults only)
 
-Cross-chain deposits use Nest's `depositAndBridge` flow: the user's stable on the source chain (BSC, Arbitrum, etc.) is bridged to Plume via LayerZero and lands as vault shares on Plume. The plugin's `build-deposit` automatically emits `depositAndBridge(...)` calldata when `--chain` is anything other than `1` (Ethereum).
+Two-step cross-chain deposit lands shares on Plume in a single tx via Nest's `depositAndBridge`: the user's stablecoin on the source chain (BSC, Arbitrum, Plasma, etc.) is sent to OLD_PREDICATE_PROXY, which routes it through LayerZero to mint shares on Plume.
 
-**Currently supported only for `vaultType: "boring"` vaults.** The newer `nest` and `boringNest` types do not have a cross-chain entry point — `build-deposit` returns a clean error and suggests Ethereum. (At time of writing, all live Nest vaults are `boringNest`, so cross-chain is effectively unused until Nest deploys a `boring`-only vault. The code path is in place for when that happens.)
+**Applies to `vaultType: "boring"` only.** All currently live Nest vaults are `boringNest`, which uses Flow B (same-chain deposit) instead — the composer is deployed on every supported source chain and shares mint locally on the source chain. Flow F can then bridge those shares to Plume or anywhere else if needed.
 
-When the boring cross-chain path applies:
+When a boring vault deploys, the cross-chain path:
 
 ```
 1-3. Same as Flow A (login, address resolution).
@@ -320,7 +334,29 @@ When the boring cross-chain path applies:
         (e.g. MetaMask connected to Plume) for signing.
 ```
 
-If the user requests cross-chain for a `nest` / `boringNest` vault, surface the plugin's error verbatim and offer Ethereum same-chain as the alternative.
+For `nest` / `boringNest` vaults the user wants to deposit from a non-Ethereum chain: route via Flow B with `--chain 56` (or 480, 9745). Shares mint on that source chain; bridge to other chains afterwards via Flow F.
+
+### Flow F — Bridge already-owned shares between chains
+
+Use when the user has shares on chain A and wants them on chain B — distinct from cross-chain deposit. Behind the scenes the plugin emits LayerZero OFT calldata for `nest` / `boringNest` shares, or the multi-chain Teller's `bridge` for `boring` shares.
+
+```
+1.  okx-agentic-wallet — wallet status (login / address resolution)
+2.  okx-rwa-nest status --address <user> --vault <slug>
+       → confirm user owns enough shares on the source chain
+3.  onchainos-nest build-bridge --vault <slug> --shares <amt> --address <user> \
+       --source-chain <source> --dest-chain <dest>
+       → returns { to, inputData, value: <native LZ fee>, requestType:
+                    "oftSend" | "tellerBridge" }
+4.  okx-security tx-scan --to <to> --input-data <hex>
+5.  okx-agentic-wallet — wallet contract-call --to <to> --chain <source>
+       --input-data <hex> --amt <value>      (value covers the LayerZero fee)
+6.  Tell user: "Your shares are bridging via LayerZero — typically arrives
+                in 2-3 minutes on the destination chain."
+       Optionally offer /schedule for a delivery check.
+```
+
+Note the user pays the LayerZero fee in native gas of the **source** chain. The plugin already adds a 10% buffer over the on-chain quote so settlement is reliable.
 
 ## Cross-Skill Workflows
 
