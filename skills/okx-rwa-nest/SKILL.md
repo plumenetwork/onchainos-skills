@@ -14,7 +14,7 @@ metadata:
   version: "0.1.0"
   homepage: "https://nest.credit"
   requires:
-    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.2"
+    plugin: "@plumenetwork/onchainos-nest-plugin@^0.0.3"
 ---
 
 # OKX RWA Nest
@@ -166,9 +166,10 @@ The plugin exposes nine subcommands. Each prints JSON to stdout, errors to stder
 | C4 | `onchainos-nest build-approve --token <0x...> --spender <0x...> --amount <ui> --chain <num>` | ERC-20 approve calldata |
 | C5 | `onchainos-nest build-deposit --vault <slug> --asset <0x...> --amount <ui> --address <0x...> --predicate-message <jsonOr@path> [--chain <num>] [--slippage-bps <bps>]` | Deposit calldata (boring or nest) |
 | C6 | `onchainos-nest build-withdraw --vault <slug> --shares <ui> --address <0x...> [--want-token <0x...>] [--chain <num>] [--claim]` | Withdraw calldata (atomic queue or requestRedeem/redeem) |
-| C7 | `onchainos-nest status --address <0x...> [--vault <slug>]` | User position summary |
-| C8 | `onchainos-nest pending-redemptions --address <0x...> [--vault <slug>]` | Pending and claimable redemptions |
-| C9 | `onchainos-nest history --vault <slug> [--days <n>]` | Vault APY trend, TVL change, recent activity |
+| C7 | `onchainos-nest build-bridge --vault <slug> --shares <ui> --address <0x...> --source-chain <num> --dest-chain <num>` | Calldata to bridge already-owned shares cross-chain via LayerZero (OFT for nest/boringNest, multi-chain Teller for boring) |
+| C8 | `onchainos-nest status --address <0x...> [--vault <slug>]` | User position summary |
+| C9 | `onchainos-nest pending-redemptions --address <0x...> [--vault <slug>]` | Pending and claimable redemptions |
+| C10 | `onchainos-nest history --vault <slug> [--days <n>]` | Vault APY trend, TVL change, recent activity |
 
 For Nest API details and response schemas, see `references/api-cookbook.md`.
 
@@ -184,7 +185,8 @@ For Nest API details and response schemas, see `references/api-cookbook.md`.
 | "Withdraw X shares from <vault>" / "从 <vault> 提取" | Flow B — Withdraw |
 | "Show my Nest positions" / "我的 Nest 仓位" | Flow C — Status |
 | "How has nTBILL performed?" / "nTBILL 表现如何" | Flow D — History |
-| "Deposit USDC from BSC into nTBILL" | Flow E — Cross-chain (with disclosure) |
+| "Deposit USDC from BSC into nTBILL" | Flow E — Cross-chain deposit (with disclosure) |
+| "Move my nTBILL from Ethereum to Plume" / "Bridge my Nest shares to BSC" | Flow F — Share bridge |
 
 ### Flow A — First-time deposit (USDC on Ethereum → vault)
 
@@ -320,7 +322,29 @@ When the boring cross-chain path applies:
         (e.g. MetaMask connected to Plume) for signing.
 ```
 
-If the user requests cross-chain for a `nest` / `boringNest` vault, surface the plugin's error verbatim and offer Ethereum same-chain as the alternative.
+If the user requests cross-chain for a `nest` / `boringNest` vault, the plugin returns a clean error suggesting Ethereum same-chain. The user can deposit same-chain first, then bridge shares cross-chain via Flow F below.
+
+### Flow F — Bridge already-owned shares between chains
+
+Use when the user has shares on chain A and wants them on chain B — distinct from cross-chain deposit. Behind the scenes the plugin emits LayerZero OFT calldata for `nest` / `boringNest` shares, or the multi-chain Teller's `bridge` for `boring` shares.
+
+```
+1.  okx-agentic-wallet — wallet status (login / address resolution)
+2.  okx-rwa-nest status --address <user> --vault <slug>
+       → confirm user owns enough shares on the source chain
+3.  onchainos-nest build-bridge --vault <slug> --shares <amt> --address <user> \
+       --source-chain <source> --dest-chain <dest>
+       → returns { to, inputData, value: <native LZ fee>, requestType:
+                    "oftSend" | "tellerBridge" }
+4.  okx-security tx-scan --to <to> --input-data <hex>
+5.  okx-agentic-wallet — wallet contract-call --to <to> --chain <source>
+       --input-data <hex> --amt <value>      (value covers the LayerZero fee)
+6.  Tell user: "Your shares are bridging via LayerZero — typically arrives
+                in 2-3 minutes on the destination chain."
+       Optionally offer /schedule for a delivery check.
+```
+
+Note the user pays the LayerZero fee in native gas of the **source** chain. The plugin already adds a 10% buffer over the on-chain quote so settlement is reliable.
 
 ## Cross-Skill Workflows
 
